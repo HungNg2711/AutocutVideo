@@ -1,0 +1,14 @@
+node_modules
+dist
+dist-ssr
+*.local
+.DS_Store
+*.tsbuildinfo
+
+# Claude Code skill bundle materialized into this project directory — tooling,
+# not part of the app itself.
+.claude/skills/
+
+# tsc -b (project references) emits these next to vite.config.ts
+vite.config.js
+vite.config.d.ts

@@ -40,9 +40,16 @@ export default function ClipCard({ clip }: ClipCardProps) {
       <div className="flex flex-1 flex-col gap-3 p-4">
         <div className="flex items-center justify-between gap-2">
           <p className="text-sm font-semibold">Clip {clip.index + 1}</p>
-          <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
-            {REASON_LABEL[clip.reason]}
-          </span>
+          <div className="flex items-center gap-1.5">
+            {clip.score != null && (
+              <span className="rounded-full bg-primary/15 px-2.5 py-1 text-xs font-semibold text-primary">
+                Điểm {Math.min(100, Math.round(clip.score * 100))}
+              </span>
+            )}
+            <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
+              {REASON_LABEL[clip.reason]}
+            </span>
+          </div>
         </div>
         <p className="text-xs text-muted-foreground">
           {formatTime(clip.start)} – {formatTime(clip.end)} · {formatBytes(clip.size)}

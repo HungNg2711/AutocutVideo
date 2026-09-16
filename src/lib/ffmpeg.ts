@@ -55,13 +55,17 @@ export async function extractAudioWav(
   inputName: string,
   startSeconds?: number,
   endSeconds?: number,
+  onProgress?: (timeSeconds: number) => void,
 ): Promise<Uint8Array> {
   const outName = 'audio-16k-mono.wav'
   const args: string[] = []
   if (startSeconds != null) args.push('-ss', String(startSeconds))
   if (endSeconds != null) args.push('-to', String(endSeconds))
   args.push('-i', inputName, '-vn', '-ar', '16000', '-ac', '1', '-f', 'wav', outName)
-  await ffmpeg.exec(args)
+  // Callers only call this once they know the source has an audio stream, so a failure
+  // here is a real problem — surface it instead of silently reading a file that was
+  // never written (that used to throw a confusing "FS error" from readFile).
+  await runTracked(ffmpeg, args, { onProgress, checkExitCode: true })
   const data = await ffmpeg.readFile(outName)
   await ffmpeg.deleteFile(outName)
   return data as Uint8Array
@@ -70,13 +74,24 @@ export async function extractAudioWav(
 /**
  * Runs an ffmpeg command while optionally collecting stderr log lines and/or
  * reporting live time-based progress (so long operations don't look frozen).
+ *
+ * `timeoutMs` is a safety net — ffmpeg-core aborts the command itself once it's spent
+ * longer than this actually processing frames. It's a backstop for genuinely runaway
+ * commands, not the primary fix for a slow one (a pathological filter graph can still
+ * take a while before the first progress tick even fires).
  */
 export async function runTracked(
   ffmpeg: FFmpeg,
   args: string[],
-  options: { onLog?: (line: string) => void; onProgress?: (timeSeconds: number) => void } = {},
+  options: {
+    onLog?: (line: string) => void
+    onProgress?: (timeSeconds: number) => void
+    timeoutMs?: number
+    /** Some callers (probing with no output) deliberately expect a non-zero exit — opt in per call. */
+    checkExitCode?: boolean
+  } = {},
 ): Promise<void> {
-  const { onLog, onProgress } = options
+  const { onLog, onProgress, timeoutMs, checkExitCode } = options
   const logHandler = ({ message }: { message: string }) => onLog?.(message)
   const progressHandler = ({ time }: { progress: number; time: number }) => {
     // ffmpeg.wasm reports `time` in microseconds of media processed so far.
@@ -85,11 +100,21 @@ export async function runTracked(
   if (onLog) ffmpeg.on('log', logHandler)
   if (onProgress) ffmpeg.on('progress', progressHandler)
   try {
-    await ffmpeg.exec(args)
+    const returnCode = await ffmpeg.exec(args, timeoutMs ?? -1)
+    if (checkExitCode && returnCode !== 0) {
+      throw new Error(`ffmpeg exited with code ${returnCode}${timeoutMs ? ' (có thể do hết thời gian chờ)' : ''}`)
+    }
   } finally {
     if (onLog) ffmpeg.off('log', logHandler)
     if (onProgress) ffmpeg.off('progress', progressHandler)
   }
+}
+
+/** Whether the probed input has at least one audio stream — checked before running any
+ * audio-only pass (silence/energy/transcription), since forcing `-c:a aac` or extracting
+ * audio from a video with no audio track makes ffmpeg fail outright. */
+export function hasAudioStream(logLines: string[]): boolean {
+  return logLines.some((line) => /Stream #\d+:\d+.*:\s*Audio:/.test(line))
 }
 
 export function parseDurationSeconds(logLines: string[]): number | null {
@@ -103,25 +128,27 @@ export function parseDurationSeconds(logLines: string[]): number | null {
   return null
 }
 
-export function parseSilenceMidpoints(logLines: string[]): number[] {
-  const starts: number[] = []
-  const points: number[] = []
+export interface SilenceRange {
+  start: number
+  end: number
+}
+
+export function parseSilenceRanges(logLines: string[]): SilenceRange[] {
+  const ranges: SilenceRange[] = []
   let pendingStart: number | null = null
   for (const line of logLines) {
     const startMatch = line.match(/silence_start:\s*(\d+(?:\.\d+)?)/)
     if (startMatch) {
       pendingStart = Number(startMatch[1])
-      starts.push(pendingStart)
       continue
     }
     const endMatch = line.match(/silence_end:\s*(\d+(?:\.\d+)?)/)
     if (endMatch && pendingStart !== null) {
-      const end = Number(endMatch[1])
-      points.push((pendingStart + end) / 2)
+      ranges.push({ start: pendingStart, end: Number(endMatch[1]) })
       pendingStart = null
     }
   }
-  return points
+  return ranges
 }
 
 export function parseSceneTimestamps(logLines: string[]): number[] {

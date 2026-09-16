@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { ArrowCounterClockwise, ClosedCaptioning, DeviceMobile, FilmSlate, Info, Sparkle } from '@phosphor-icons/react'
+import { ArrowCounterClockwise, FilmSlate, Info, Sparkle } from '@phosphor-icons/react'
 import type { SplitSettings } from '../types'
 import { SCENE_DETECTION_MAX_DURATION } from '../hooks/useVideoSplitter'
 import { formatTime } from '../lib/splitter'
+import SplitSettingsControls from './SplitSettingsControls'
 
 interface ClipSettingsPanelProps {
   file: File
@@ -75,61 +76,8 @@ export default function ClipSettingsPanel({ file, settings, onChange, onStart, o
         </p>
       )}
 
-      <div className="mt-6 space-y-5">
-        <div>
-          <div className="flex items-center justify-between">
-            <label htmlFor="target-duration" className="text-sm font-medium">
-              Độ dài mỗi clip mong muốn
-            </label>
-            <span className="rounded-md bg-muted px-2 py-0.5 text-sm font-semibold text-primary">{settings.targetDuration}s</span>
-          </div>
-          <input
-            id="target-duration"
-            type="range"
-            min={15}
-            max={60}
-            step={1}
-            value={settings.targetDuration}
-            onChange={(e) => onChange({ ...settings, targetDuration: Number(e.target.value) })}
-            className="mt-2 w-full accent-primary"
-          />
-          <div className="mt-1 flex justify-between text-xs text-muted-foreground">
-            <span>15s</span>
-            <span>60s</span>
-          </div>
-        </div>
-
-        <label className="flex cursor-pointer items-center justify-between rounded-xl border border-border bg-background/40 px-4 py-3">
-          <span className="flex items-center gap-2.5">
-            <DeviceMobile size={18} weight="bold" className="text-accent" aria-hidden="true" />
-            <span>
-              <span className="block text-sm font-medium">Cắt khung dọc 9:16</span>
-              <span className="block text-xs text-muted-foreground">Chuẩn hiển thị TikTok / Reels / Shorts</span>
-            </span>
-          </span>
-          <input
-            type="checkbox"
-            checked={settings.verticalCrop}
-            onChange={(e) => onChange({ ...settings, verticalCrop: e.target.checked })}
-            className="h-5 w-5 shrink-0 accent-primary"
-          />
-        </label>
-
-        <label className="flex cursor-pointer items-center justify-between rounded-xl border border-border bg-background/40 px-4 py-3">
-          <span className="flex items-center gap-2.5">
-            <ClosedCaptioning size={18} weight="bold" className="text-accent" aria-hidden="true" />
-            <span>
-              <span className="block text-sm font-medium">Tự động thêm phụ đề</span>
-              <span className="block text-xs text-muted-foreground">Nhận diện giọng nói ngay trên trình duyệt — lần đầu sẽ mất thêm thời gian tải mô hình</span>
-            </span>
-          </span>
-          <input
-            type="checkbox"
-            checked={settings.generateSubtitles}
-            onChange={(e) => onChange({ ...settings, generateSubtitles: e.target.checked })}
-            className="h-5 w-5 shrink-0 accent-primary"
-          />
-        </label>
+      <div className="mt-6">
+        <SplitSettingsControls settings={settings} onChange={onChange} />
       </div>
 
       <button

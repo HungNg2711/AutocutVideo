@@ -5,19 +5,24 @@ interface Candidate {
   reason: ClipReason
 }
 
-const MAX_CLIPS = 12
+export const MAX_CLIPS = 12
 const TAIL_MERGE_THRESHOLD = 6
 
 /**
  * Greedy rule-based splitter: walks forward from 0, and at each step prefers a
  * detected scene-change or silence-gap candidate close to the target duration
  * (snap window) over a hard cut, so clips don't end mid-sentence when possible.
+ *
+ * `cap` limits how many segments to return — pass a high number to get a full
+ * chronological decomposition of the video as a candidate pool for scoring,
+ * instead of the final (small) clip count.
  */
 export function buildSegments(
   duration: number,
   sceneTimestamps: number[],
   silenceMidpoints: number[],
   settings: SplitSettings,
+  cap: number = MAX_CLIPS,
 ): ClipSegment[] {
   const { targetDuration, minDuration, maxDuration } = settings
   const snapWindow = Math.min(8, targetDuration * 0.3)
@@ -33,7 +38,7 @@ export function buildSegments(
   let cursor = 0
   let index = 0
 
-  while (cursor < duration - 0.5 && segments.length < MAX_CLIPS) {
+  while (cursor < duration - 0.5 && segments.length < cap) {
     const idealEnd = cursor + targetDuration
     const hardMax = Math.min(cursor + maxDuration, duration)
 

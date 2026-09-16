@@ -24,13 +24,21 @@ function getTranscriber(): Promise<Transcriber> {
   return transcriberPromise
 }
 
+/**
+ * Returns a fresh copy of the font bytes every call. The underlying fetch is cached (no
+ * repeat network request), but ffmpeg.writeFile() transfers — and thereby detaches — the
+ * ArrayBuffer it's given, so handing out the same cached buffer twice would make the
+ * second write crash with "ArrayBuffer is detached" the moment a second clip is cut in
+ * the same session.
+ */
 export async function getSubtitleFontBytes(): Promise<Uint8Array> {
   if (!fontBytesPromise) {
     fontBytesPromise = fetch(FONT_URL)
       .then((res) => res.arrayBuffer())
       .then((buf) => new Uint8Array(buf))
   }
-  return fontBytesPromise
+  const cached = await fontBytesPromise
+  return cached.slice()
 }
 
 export const SUBTITLE_FONT_FS_NAME = FONT_FS_NAME
@@ -101,11 +109,50 @@ function escapeDrawtext(text: string): string {
   return text
     .replace(/\\/g, '\\\\')
     .replace(/:/g, '\\:')
+    .replace(/%/g, '%%') // otherwise drawtext tries to expand it as a %{...} function
     .replace(/'/g, '’') // sidestep quote-escaping inside the filter's single-quoted value
 }
 
+// Chaining one drawtext filter per Whisper cue was the actual cause of the "hangs while
+// cutting" bug: a clip with many short cues (dense speech, several 20s transcription
+// chunks) could produce 30-40+ chained drawtext nodes, and ffmpeg's filter graph — each
+// node loading its own copy of the font and alpha-blending a text box every frame —
+// became slow enough to look frozen. Merging adjacent cues and capping the total count
+// keeps the filter graph small regardless of how many raw cues Whisper returns.
+const MERGE_GAP_SECONDS = 0.35
+const MAX_MERGED_TEXT_LENGTH = 90
+const MAX_SUBTITLE_CUES_PER_CLIP = 14
+
+function mergeCloseCues(cues: SubtitleCue[]): SubtitleCue[] {
+  if (cues.length === 0) return []
+  const sorted = [...cues].sort((a, b) => a.start - b.start)
+  const merged: SubtitleCue[] = [{ ...sorted[0] }]
+  for (let i = 1; i < sorted.length; i += 1) {
+    const cur = sorted[i]
+    const last = merged[merged.length - 1]
+    const gap = cur.start - last.end
+    const combined = `${last.text} ${cur.text}`.trim()
+    if (gap <= MERGE_GAP_SECONDS && combined.length <= MAX_MERGED_TEXT_LENGTH) {
+      last.text = combined
+      last.end = Math.max(last.end, cur.end)
+    } else {
+      merged.push({ ...cur })
+    }
+  }
+  return merged
+}
+
+/** Evenly samples down to `max` entries instead of just truncating the tail. */
+function capCount<T>(items: T[], max: number): T[] {
+  if (items.length <= max) return items
+  const step = items.length / max
+  const result: T[] = []
+  for (let i = 0; i < max; i += 1) result.push(items[Math.floor(i * step)])
+  return result
+}
+
 /**
- * Builds a chained drawtext filter (one node per cue, time-gated with `enable`)
+ * Builds a chained drawtext filter (one node per merged cue, time-gated with `enable`)
  * for the cues that fall inside [clipStart, clipEnd), timed relative to the clip.
  */
 export function buildSubtitleFilter(cues: SubtitleCue[], clipStart: number, clipEnd: number): string {
@@ -117,7 +164,9 @@ export function buildSubtitleFilter(cues: SubtitleCue[], clipStart: number, clip
     }))
     .filter((cue) => cue.end > cue.start)
 
-  return relevant
+  const bounded = capCount(mergeCloseCues(relevant), MAX_SUBTITLE_CUES_PER_CLIP)
+
+  return bounded
     .map(
       (cue) =>
         `drawtext=fontfile=${FONT_FS_NAME}:text='${escapeDrawtext(cue.text)}':fontsize=52:fontcolor=white:` +

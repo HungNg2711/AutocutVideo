@@ -6,6 +6,8 @@ export interface ClipSegment {
   start: number
   end: number
   reason: ClipReason
+  /** 0-1 composite score from the candidate-ranking algorithm, when scoring ran. */
+  score?: number
 }
 
 export interface GeneratedClip extends ClipSegment {
@@ -18,6 +20,26 @@ export interface SubtitleCue {
   text: string
   start: number
   end: number
+}
+
+/**
+ * Tunable weights for the candidate-scoring algorithm (see lib/scoring.ts).
+ * Not fixed — configurable from the UI, defaults are a reasonable starting point.
+ */
+export interface ScoringWeights {
+  hook: number
+  sceneDensity: number
+  audioEnergy: number
+  selfContained: number
+  deadAir: number
+}
+
+export const DEFAULT_SCORING_WEIGHTS: ScoringWeights = {
+  hook: 0.35,
+  sceneDensity: 0.15,
+  audioEnergy: 0.2,
+  selfContained: 0.2,
+  deadAir: 0.1,
 }
 
 export type Stage =
@@ -50,6 +72,9 @@ export interface SplitSettings {
   maxDuration: number
   verticalCrop: boolean
   generateSubtitles: boolean
+  scoringWeights: ScoringWeights
+  /** Exact number of clips to produce. Undefined = let the system decide (auto). */
+  clipCount?: number
 }
 
 export const REASON_LABEL: Record<ClipReason, string> = {

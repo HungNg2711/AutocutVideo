@@ -2,16 +2,20 @@ import { useCallback, useRef, useState } from 'react'
 import {
   extractAudioWav,
   getFFmpeg,
+  hasAudioStream,
   parseDurationSeconds,
   parseSceneTimestamps,
-  parseSilenceMidpoints,
+  parseSilenceRanges,
   runTracked,
   terminateFFmpeg,
   writeInputFile,
 } from '../lib/ffmpeg'
-import { buildSegments } from '../lib/splitter'
+import { buildSegments, MAX_CLIPS } from '../lib/splitter'
 import { buildSubtitleFilter, decodeWavToFloat32, getSubtitleFontBytes, SUBTITLE_FONT_FS_NAME, transcribeAudio } from '../lib/subtitles'
-import type { GeneratedClip, SplitSettings, StageProgress, SubtitleCue } from '../types'
+import { computeEnergyCurve, deadAirRatio, overallPeakRms, peakEnergyInRange } from '../lib/audioEnergy'
+import { combineScore, hookScore, sceneDensityScore, selfContainedScore } from '../lib/scoring'
+import type { CandidateSignals } from '../lib/scoring'
+import type { ClipSegment, GeneratedClip, SplitSettings, StageProgress, SubtitleCue } from '../types'
 
 const INPUT_NAME = 'input.mp4'
 
@@ -21,6 +25,14 @@ const INPUT_NAME = 'input.mp4'
 // silence detection plus fixed-length fallback cuts instead.
 export const SCENE_DETECTION_MAX_DURATION = 600
 
+// How many candidates (relative to the final clip count) get a full Whisper-based score
+// refinement. Keeps transcription bounded even when the cheap first pass turns up far
+// more candidates than we'll ever use (long videos).
+const CANDIDATE_POOL_MULTIPLIER = 2
+// Safety cap on how many chronological candidates we ever generate — the loop already
+// terminates on its own once it reaches the end of the video, this just bounds worst case.
+const CANDIDATE_GENERATION_CAP = 2000
+
 const INITIAL_PROGRESS: StageProgress = {
   stage: 'idle',
   label: '',
@@ -28,6 +40,14 @@ const INITIAL_PROGRESS: StageProgress = {
 }
 
 const CANCELLED_MESSAGE = 'called FFmpeg.terminate()'
+
+interface ScoredCandidate extends ClipSegment {
+  signals: CandidateSignals
+}
+
+function segmentsOverlap(a: ClipSegment, b: ClipSegment): boolean {
+  return a.start < b.end && b.start < a.end
+}
 
 export function useVideoSplitter() {
   const [progress, setProgress] = useState<StageProgress>(INITIAL_PROGRESS)
@@ -58,7 +78,7 @@ export function useVideoSplitter() {
         setProgress({ stage: 'loading-engine', label: 'Đang khởi động bộ xử lý video…', overall: 0.02 })
         const ffmpeg = await getFFmpeg()
 
-        setProgress({ stage: 'probing', label: 'Đang đọc thông tin video…', overall: 0.08 })
+        setProgress({ stage: 'probing', label: 'Đang đọc thông tin video…', overall: 0.06 })
         await writeInputFile(ffmpeg, file, INPUT_NAME)
 
         const probeLogs: string[] = []
@@ -68,15 +88,17 @@ export function useVideoSplitter() {
           throw new Error('Không đọc được thời lượng video. Vui lòng thử một file khác.')
         }
         setSourceDuration(duration)
+        // Forcing an audio codec (or extracting audio) on a video with no audio stream
+        // makes ffmpeg fail outright — every audio-only step below is skipped when absent.
+        const hasAudio = hasAudioStream(probeLogs)
 
+        // --- Cheap, whole-video analysis passes ---------------------------------------
         const skipSceneDetection = duration > SCENE_DETECTION_MAX_DURATION
         let sceneTimestamps: number[] = []
         if (!skipSceneDetection) {
           const sceneLogs: string[] = []
           await runTracked(
             ffmpeg,
-            // Downsample to a low fps/resolution proxy before diffing frames — decoding the
-            // source is unavoidable, but this keeps the per-frame comparison work cheap.
             ['-i', INPUT_NAME, '-vf', "fps=6,scale=256:-2,select='gt(scene,0.35)',showinfo", '-an', '-f', 'null', '-'],
             {
               onLog: (line) => sceneLogs.push(line),
@@ -84,7 +106,7 @@ export function useVideoSplitter() {
                 setProgress({
                   stage: 'detecting',
                   label: 'Đang phát hiện chuyển cảnh…',
-                  overall: 0.1 + 0.08 * Math.min(1, timeSeconds / duration),
+                  overall: 0.08 + 0.06 * Math.min(1, timeSeconds / duration),
                   elapsedSeconds: timeSeconds,
                   totalSeconds: duration,
                 }),
@@ -95,79 +117,159 @@ export function useVideoSplitter() {
           setProgress({
             stage: 'detecting',
             label: 'Video dài — bỏ qua phân tích chuyển cảnh để xử lý nhanh hơn…',
-            overall: 0.18,
+            overall: 0.14,
           })
         }
 
-        const silenceLogs: string[] = []
-        await runTracked(
-          ffmpeg,
-          ['-i', INPUT_NAME, '-af', 'silencedetect=noise=-30dB:d=0.6', '-vn', '-f', 'null', '-'],
-          {
-            onLog: (line) => silenceLogs.push(line),
-            onProgress: (timeSeconds) =>
-              setProgress({
-                stage: 'detecting',
-                label: 'Đang phát hiện khoảng lặng trong giọng nói…',
-                overall: 0.2 + 0.08 * Math.min(1, timeSeconds / duration),
-                elapsedSeconds: timeSeconds,
-                totalSeconds: duration,
-              }),
-          },
-        )
-        const silenceMidpoints = parseSilenceMidpoints(silenceLogs)
+        let silenceRanges: { start: number; end: number }[] = []
+        let silenceMidpoints: number[] = []
+        let energyCurve: ReturnType<typeof computeEnergyCurve> = []
+        let peakRms = 0
 
-        const segments = buildSegments(duration, sceneTimestamps, silenceMidpoints, settings)
-        if (segments.length === 0) {
+        if (hasAudio) {
+          const silenceLogs: string[] = []
+          await runTracked(
+            ffmpeg,
+            ['-i', INPUT_NAME, '-af', 'silencedetect=noise=-30dB:d=0.6', '-vn', '-f', 'null', '-'],
+            {
+              onLog: (line) => silenceLogs.push(line),
+              onProgress: (timeSeconds) =>
+                setProgress({
+                  stage: 'detecting',
+                  label: 'Đang phát hiện khoảng lặng trong giọng nói…',
+                  overall: 0.14 + 0.06 * Math.min(1, timeSeconds / duration),
+                  elapsedSeconds: timeSeconds,
+                  totalSeconds: duration,
+                }),
+            },
+          )
+          silenceRanges = parseSilenceRanges(silenceLogs)
+          silenceMidpoints = silenceRanges.map((r) => (r.start + r.end) / 2)
+
+          setProgress({ stage: 'detecting', label: 'Đang phân tích năng lượng âm thanh…', overall: 0.2 })
+          const fullAudioWav = await extractAudioWav(ffmpeg, INPUT_NAME, undefined, undefined, (timeSeconds) =>
+            setProgress({
+              stage: 'detecting',
+              label: 'Đang phân tích năng lượng âm thanh…',
+              overall: 0.2 + 0.08 * Math.min(1, timeSeconds / duration),
+              elapsedSeconds: timeSeconds,
+              totalSeconds: duration,
+            }),
+          )
+          const fullAudioSamples = await decodeWavToFloat32(fullAudioWav)
+          energyCurve = computeEnergyCurve(fullAudioSamples, 16000)
+          peakRms = overallPeakRms(energyCurve)
+        } else {
+          setProgress({
+            stage: 'detecting',
+            label: 'Video không có audio — bỏ qua phân tích giọng nói/âm lượng…',
+            overall: 0.2,
+          })
+        }
+
+        // --- Candidate generation: full chronological decomposition of the video ------
+        // An explicit clip count overrides the target-duration heuristic: aim each
+        // candidate at roughly duration/clipCount so the video actually splits into that
+        // many pieces, instead of just capping how many of the usual-length clips we take.
+        const targetClipCount = settings.clipCount && settings.clipCount > 0 ? settings.clipCount : MAX_CLIPS
+        const candidateSettings = settings.clipCount && settings.clipCount > 0
+          ? {
+              ...settings,
+              targetDuration: Math.min(
+                settings.maxDuration,
+                Math.max(settings.minDuration, duration / settings.clipCount),
+              ),
+            }
+          : settings
+
+        const allCandidates: ScoredCandidate[] = buildSegments(
+          duration,
+          sceneTimestamps,
+          silenceMidpoints,
+          candidateSettings,
+          CANDIDATE_GENERATION_CAP,
+        ).map((seg) => ({ ...seg, signals: { hook: 0, sceneDensity: 0, audioEnergy: 0, selfContained: 0.5, deadAir: 0 } }))
+
+        if (allCandidates.length === 0) {
           throw new Error('Video quá ngắn để tạo clip. Vui lòng thử video dài hơn.')
         }
 
-        let cues: SubtitleCue[] = []
-        if (settings.generateSubtitles) {
-          setProgress({
-            stage: 'transcribing',
-            label: 'Đang tải mô hình nhận diện giọng nói (chỉ lần đầu)…',
-            overall: 0.32,
-          })
-          try {
-            // Only transcribe the stretch of source video that will actually become clips —
-            // for a long video capped at MAX_CLIPS, that can be a small fraction of the total
-            // runtime, so this avoids running Whisper over audio nothing will ever use.
-            const subtitleRangeStart = segments[0].start
-            const subtitleRangeEnd = segments[segments.length - 1].end
-            const [wavBytes, fontBytes] = await Promise.all([
-              extractAudioWav(ffmpeg, INPUT_NAME, subtitleRangeStart, subtitleRangeEnd),
-              getSubtitleFontBytes(),
-            ])
-            await ffmpeg.writeFile(SUBTITLE_FONT_FS_NAME, fontBytes)
-
-            const audioSamples = await decodeWavToFloat32(wavBytes)
-            cues = await transcribeAudio(audioSamples, {
-              shouldContinue: () => !cancelledRef.current,
-              onProgress: (fraction) =>
-                setProgress({
-                  stage: 'transcribing',
-                  label: `Đang nhận diện giọng nói để tạo phụ đề… ${Math.round(fraction * 100)}%`,
-                  overall: 0.35 + 0.15 * fraction,
-                }),
-            })
-            // transcribeAudio() timed cues relative to the extracted (bounded) clip — shift
-            // them back to the source video's timeline to match segment start/end times.
-            cues = cues.map((cue) => ({
-              ...cue,
-              start: cue.start + subtitleRangeStart,
-              end: cue.end + subtitleRangeStart,
-            }))
-          } catch (subtitleErr) {
-            if (cancelledRef.current) throw subtitleErr
-            // Video may have no audio track, or the model failed to load — degrade gracefully.
-            // eslint-disable-next-line no-console
-            console.error('[autocut] subtitle generation failed, continuing without captions', subtitleErr)
-            cues = []
+        // --- Tier 1: cheap signals only (no transcript needed) — ranks every candidate -
+        for (const candidate of allCandidates) {
+          const signals: CandidateSignals = {
+            hook: 0,
+            sceneDensity: sceneDensityScore(sceneTimestamps, candidate.start, candidate.end),
+            audioEnergy: peakEnergyInRange(energyCurve, peakRms, candidate.start, candidate.end),
+            selfContained: 0.5,
+            deadAir: deadAirRatio(silenceRanges, candidate.start, candidate.end),
           }
+          candidate.signals = signals
+          candidate.score = combineScore(signals, settings.scoringWeights)
         }
 
-        const cuttingStart = settings.generateSubtitles ? 0.5 : 0.3
+        // --- Tier 2: refine the top pool with real transcript-based signals -----------
+        const candidateCuesMap = new Map<string, SubtitleCue[]>()
+        let scorePool = allCandidates
+        if (settings.generateSubtitles && hasAudio) {
+          const poolSize = Math.min(allCandidates.length, targetClipCount * CANDIDATE_POOL_MULTIPLIER)
+          const pool = [...allCandidates].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, poolSize)
+
+          const fontBytes = await getSubtitleFontBytes()
+          await ffmpeg.writeFile(SUBTITLE_FONT_FS_NAME, fontBytes)
+
+          for (let i = 0; i < pool.length; i += 1) {
+            const candidate = pool[i]
+            setProgress({
+              stage: 'transcribing',
+              label: `Đang phân tích ứng viên ${i + 1}/${pool.length}…`,
+              overall: 0.3 + 0.25 * ((i + 1) / pool.length),
+            })
+            let localCues: SubtitleCue[] = []
+            try {
+              const wavBytes = await extractAudioWav(ffmpeg, INPUT_NAME, candidate.start, candidate.end)
+              const samples = await decodeWavToFloat32(wavBytes)
+              localCues = await transcribeAudio(samples, { shouldContinue: () => !cancelledRef.current })
+              localCues = localCues.map((cue) => ({
+                ...cue,
+                start: cue.start + candidate.start,
+                end: cue.end + candidate.start,
+              }))
+            } catch (candidateErr) {
+              if (cancelledRef.current) throw candidateErr
+              // This one candidate failed to transcribe (e.g. no speech in range) — score
+              // it on cheap signals alone instead of aborting the whole selection.
+              // eslint-disable-next-line no-console
+              console.error('[autocut] candidate transcription failed, scoring without it', candidateErr)
+            }
+
+            candidateCuesMap.set(candidate.id, localCues)
+            const signals: CandidateSignals = {
+              ...candidate.signals,
+              hook: hookScore(localCues[0]?.text ?? ''),
+              selfContained: selfContainedScore(candidate.start, candidate.end, localCues),
+            }
+            candidate.signals = signals
+            candidate.score = combineScore(signals, settings.scoringWeights)
+          }
+          scorePool = pool
+        }
+
+        // --- Final selection: highest score first, skipping time overlaps -------------
+        const ranked = [...scorePool].sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+        const selected: ScoredCandidate[] = []
+        for (const candidate of ranked) {
+          if (selected.length >= targetClipCount) break
+          if (selected.some((s) => segmentsOverlap(s, candidate))) continue
+          selected.push(candidate)
+        }
+        if (selected.length === 0) {
+          throw new Error('Không tìm được đoạn phù hợp để cắt clip. Vui lòng thử video khác.')
+        }
+        selected.sort((a, b) => a.start - b.start)
+        const segments: ScoredCandidate[] = selected.map((seg, idx) => ({ ...seg, index: idx }))
+
+        // --- Cut & export the selected clips --------------------------------------------
+        const cuttingStart = settings.generateSubtitles ? 0.55 : 0.3
         const generated: GeneratedClip[] = []
         for (let i = 0; i < segments.length; i += 1) {
           const seg = segments[i]
@@ -186,8 +288,11 @@ export function useVideoSplitter() {
           const baseFilter = settings.verticalCrop
             ? 'crop=min(iw\\,ih*9/16):ih,scale=1080:1920,setsar=1'
             : 'scale=1080:-2,setsar=1'
-          const subtitleFilter = settings.generateSubtitles ? buildSubtitleFilter(cues, seg.start, seg.end) : ''
+          const cuesForSegment = settings.generateSubtitles ? candidateCuesMap.get(seg.id) ?? [] : []
+          const subtitleFilter = settings.generateSubtitles ? buildSubtitleFilter(cuesForSegment, seg.start, seg.end) : ''
           const vf = subtitleFilter ? `${baseFilter},${subtitleFilter}` : baseFilter
+          // Forcing an AAC audio stream on a source with none makes ffmpeg refuse to run.
+          const audioArgs = hasAudio ? ['-c:a', 'aac', '-b:a', '128k'] : ['-an']
 
           await runTracked(
             ffmpeg,
@@ -199,8 +304,7 @@ export function useVideoSplitter() {
               '-c:v', 'libx264',
               '-preset', 'veryfast',
               '-crf', '26',
-              '-c:a', 'aac',
-              '-b:a', '128k',
+              ...audioArgs,
               outName,
             ],
             {
@@ -212,6 +316,10 @@ export function useVideoSplitter() {
                   currentClip: i + 1,
                   totalClips: segments.length,
                 }),
+              // Safety net against a runaway filter graph (e.g. too many chained subtitle
+              // filters) — bail out with a clear error instead of hanging indefinitely.
+              timeoutMs: Math.max(60_000, segDuration * 8_000),
+              checkExitCode: true,
             },
           )
 
@@ -221,11 +329,13 @@ export function useVideoSplitter() {
           const url = URL.createObjectURL(blob)
           clipUrlsRef.current.push(url)
           generated.push({ ...seg, url, size: blob.size, hasSubtitles: Boolean(subtitleFilter) })
+          // Show each clip as soon as it's ready instead of making the user wait for the
+          // whole batch — they can already preview/download it while the rest keep cutting.
+          setClips([...generated])
           await ffmpeg.deleteFile(outName)
         }
 
         await ffmpeg.deleteFile(INPUT_NAME)
-        setClips(generated)
         setProgress({ stage: 'done', label: 'Hoàn tất!', overall: 1 })
       } catch (err) {
         if (cancelledRef.current) {

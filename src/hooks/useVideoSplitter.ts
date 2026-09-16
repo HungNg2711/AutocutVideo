@@ -302,7 +302,7 @@ export function useVideoSplitter() {
               '-i', INPUT_NAME,
               '-vf', vf,
               '-c:v', 'libx264',
-              '-preset', 'veryfast',
+              '-preset', 'ultrafast',
               '-crf', '26',
               ...audioArgs,
               outName,

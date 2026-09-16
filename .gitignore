@@ -12,3 +12,6 @@ dist-ssr
 # tsc -b (project references) emits these next to vite.config.ts
 vite.config.js
 vite.config.d.ts
+
+# Local test videos copied into public/ for manual dev-server testing
+public/_test_*

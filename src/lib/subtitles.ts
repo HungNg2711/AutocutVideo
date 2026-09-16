@@ -119,9 +119,9 @@ function escapeDrawtext(text: string): string {
 // node loading its own copy of the font and alpha-blending a text box every frame —
 // became slow enough to look frozen. Merging adjacent cues and capping the total count
 // keeps the filter graph small regardless of how many raw cues Whisper returns.
-const MERGE_GAP_SECONDS = 0.35
-const MAX_MERGED_TEXT_LENGTH = 90
-const MAX_SUBTITLE_CUES_PER_CLIP = 14
+const MERGE_GAP_SECONDS = 0.6
+const MAX_MERGED_TEXT_LENGTH = 110
+const MAX_SUBTITLE_CUES_PER_CLIP = 8
 
 function mergeCloseCues(cues: SubtitleCue[]): SubtitleCue[] {
   if (cues.length === 0) return []

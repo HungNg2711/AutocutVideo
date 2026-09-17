@@ -1,5 +1,6 @@
 import { createReadStream } from 'node:fs'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 const REQUIRED_ENV = ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET', 'R2_PUBLIC_BASE_URL'] as const
 
@@ -22,6 +23,10 @@ function getClient(): S3Client {
         accessKeyId: requireEnv('R2_ACCESS_KEY_ID'),
         secretAccessKey: requireEnv('R2_SECRET_ACCESS_KEY'),
       },
+      // Without this the SDK addresses objects as `<bucket>.<accountid>.r2.cloudflarestorage.com`,
+      // a subdomain R2 never creates — the browser's PUT just fails DNS resolution ("Failed to
+      // fetch"). Path-style (`<accountid>.r2.cloudflarestorage.com/<bucket>/...`) is what R2 expects.
+      forcePathStyle: true,
     })
   }
   return client
@@ -43,4 +48,24 @@ export async function uploadFile(localPath: string, key: string, contentType: st
   )
 
   return `${publicBase}/${key}`
+}
+
+/**
+ * Returns a short-lived URL the browser can PUT the source video to directly — the file
+ * never passes through this server, avoiding Cloud Run's request-size ceiling entirely.
+ */
+export async function getUploadUrl(
+  key: string,
+  contentType: string,
+): Promise<{ uploadUrl: string; publicUrl: string }> {
+  const bucket = requireEnv('R2_BUCKET')
+  const publicBase = requireEnv('R2_PUBLIC_BASE_URL').replace(/\/$/, '')
+
+  const uploadUrl = await getSignedUrl(
+    getClient(),
+    new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType }),
+    { expiresIn: 3600 },
+  )
+
+  return { uploadUrl, publicUrl: `${publicBase}/${key}` }
 }

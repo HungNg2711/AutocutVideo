@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { ClosedCaptioning, DeviceMobile, FastForward, Gauge, GearSix, Stack } from '@phosphor-icons/react'
+import { CloudArrowUp, ClosedCaptioning, DeviceMobile, FastForward, Gauge, GearSix, Stack } from '@phosphor-icons/react'
 import type { EncodeSpeed, SplitSettings } from '../types'
 import { ENCODE_SPEED_LABEL } from '../types'
+import { isServerConfigured } from '../lib/serverPipeline'
 import ScoringWeightsPanel from './ScoringWeightsPanel'
 
 const ENCODE_SPEED_OPTIONS: EncodeSpeed[] = ['quality', 'balanced', 'fast']
@@ -45,6 +46,27 @@ export default function SplitSettingsControls({ settings, onChange }: SplitSetti
           <span>60s</span>
         </div>
       </div>
+
+      {isServerConfigured() && (
+        <label className="flex cursor-pointer items-center justify-between rounded-xl border border-border bg-background/40 px-4 py-3">
+          <span className="flex items-center gap-2.5">
+            <CloudArrowUp size={18} weight="bold" className="text-accent" aria-hidden="true" />
+            <span>
+              <span className="block text-sm font-medium">Cắt video trên server (nhanh hơn)</span>
+              <span className="block text-xs text-muted-foreground">
+                Dùng ffmpeg thật trên Cloud Run thay vì WASM trên trình duyệt — nhanh hơn nhiều, nhưng cần tải
+                video gốc lên server trước.
+              </span>
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            checked={settings.useServerProcessing}
+            onChange={(e) => onChange({ ...settings, useServerProcessing: e.target.checked })}
+            className="h-5 w-5 shrink-0 accent-primary"
+          />
+        </label>
+      )}
 
       <div className="rounded-xl border border-border bg-background/40 px-4 py-3">
         <label className="flex cursor-pointer items-center justify-between">

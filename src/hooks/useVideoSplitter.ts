@@ -15,6 +15,8 @@ import { buildSubtitleFilter, decodeWavToFloat32, getSubtitleFontBytes, SUBTITLE
 import { computeEnergyCurve, deadAirRatio, overallPeakRms, peakEnergyInRange } from '../lib/audioEnergy'
 import { combineScore, hookScore, sceneDensityScore, selfContainedScore } from '../lib/scoring'
 import type { CandidateSignals } from '../lib/scoring'
+import { isServerConfigured, requestCutJob, uploadSourceVideo } from '../lib/serverPipeline'
+import type { ServerCutSegment } from '../lib/serverPipeline'
 import { ENCODE_PRESET_MAP } from '../types'
 import type { ClipSegment, GeneratedClip, SplitSettings, StageProgress, SubtitleCue } from '../types'
 
@@ -271,6 +273,43 @@ export function useVideoSplitter() {
 
         // --- Cut & export the selected clips --------------------------------------------
         const cuttingStart = settings.generateSubtitles ? 0.55 : 0.3
+
+        if (settings.useServerProcessing && isServerConfigured()) {
+          setProgress({ stage: 'cutting', label: 'Đang tải video lên server…', overall: cuttingStart })
+          const videoUrl = await uploadSourceVideo(file, (fraction) =>
+            setProgress({
+              stage: 'cutting',
+              label: `Đang tải video lên server… ${Math.round(fraction * 100)}%`,
+              overall: cuttingStart + 0.15 * fraction,
+            }),
+          )
+
+          setProgress({
+            stage: 'cutting',
+            label: `Đang cắt ${segments.length} clip trên server (ffmpeg thật)…`,
+            overall: cuttingStart + 0.2,
+          })
+          const serverSegments: ServerCutSegment[] = segments.map((seg) => ({
+            id: seg.id,
+            start: seg.start,
+            end: seg.end,
+            verticalCrop: settings.verticalCrop,
+            speed: settings.playbackSpeed,
+            cues: settings.generateSubtitles ? candidateCuesMap.get(seg.id) : undefined,
+          }))
+          const serverClips = await requestCutJob(videoUrl, serverSegments)
+
+          const generated: GeneratedClip[] = segments.map((seg) => {
+            const clip = serverClips.find((c) => c.id === seg.id)
+            const hasCues = Boolean(settings.generateSubtitles && (candidateCuesMap.get(seg.id)?.length ?? 0) > 0)
+            return { ...seg, url: clip?.url ?? '', size: clip?.size ?? 0, hasSubtitles: hasCues }
+          })
+          setClips(generated)
+          await ffmpeg.deleteFile(INPUT_NAME)
+          setProgress({ stage: 'done', label: 'Hoàn tất!', overall: 1 })
+          return
+        }
+
         const generated: GeneratedClip[] = []
         for (let i = 0; i < segments.length; i += 1) {
           const seg = segments[i]

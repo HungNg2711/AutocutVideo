@@ -7,11 +7,25 @@ import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
 import { cutSegment, probe } from './ffmpeg.js'
-import { uploadFile } from './r2.js'
+import { getUploadUrl, uploadFile } from './r2.js'
 import type { SubtitleCue } from './subtitles.js'
 
 const app = express()
 app.use(express.json({ limit: '2mb' })) // just the job description (URLs + cue text), not the video itself
+
+// The frontend runs on a different origin (Cloudflare Pages / localhost dev) — allow it
+// to call this API. Restrict to one origin via ALLOWED_ORIGIN once you have a real domain;
+// "*" is fine for now since every real request still needs the API key below.
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', process.env.ALLOWED_ORIGIN || '*')
+  res.header('Access-Control-Allow-Headers', 'Content-Type, x-api-key')
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(204)
+    return
+  }
+  next()
+})
 
 // Basic shared-secret auth — this endpoint spends real CPU/money per request, so it must
 // not be left open to the public internet. Set API_KEY in Cloud Run and send it from the
@@ -27,6 +41,21 @@ app.use((req, res, next) => {
 })
 
 app.get('/health', (_req, res) => res.json({ ok: true }))
+
+app.post('/uploads', async (req, res) => {
+  const { filename, contentType } = (req.body ?? {}) as { filename?: string; contentType?: string }
+  if (!filename) {
+    res.status(400).json({ error: 'filename is required' })
+    return
+  }
+  try {
+    const key = `sources/${randomUUID()}-${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+    const result = await getUploadUrl(key, contentType || 'application/octet-stream')
+    res.json(result)
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Unknown error' })
+  }
+})
 
 interface CutSegmentInput {
   id: string

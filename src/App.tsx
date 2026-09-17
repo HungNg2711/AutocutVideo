@@ -19,6 +19,7 @@ const DEFAULT_SETTINGS: SplitSettings = {
   scoringWeights: DEFAULT_SCORING_WEIGHTS,
   encodeSpeed: 'fast',
   playbackSpeed: 1,
+  useServerProcessing: true,
 }
 
 export default function App() {

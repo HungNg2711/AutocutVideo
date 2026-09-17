@@ -93,6 +93,8 @@ export interface SplitSettings {
   encodeSpeed: EncodeSpeed
   /** Output playback speed multiplier — 1 = normal, 0.5 = half speed, 2 = double speed. */
   playbackSpeed: number
+  /** Cut with the real-ffmpeg Cloud Run backend instead of the local WASM build, when configured. */
+  useServerProcessing: boolean
 }
 
 export const REASON_LABEL: Record<ClipReason, string> = {

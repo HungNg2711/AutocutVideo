@@ -15,6 +15,7 @@ import { buildSubtitleFilter, decodeWavToFloat32, getSubtitleFontBytes, SUBTITLE
 import { computeEnergyCurve, deadAirRatio, overallPeakRms, peakEnergyInRange } from '../lib/audioEnergy'
 import { combineScore, hookScore, sceneDensityScore, selfContainedScore } from '../lib/scoring'
 import type { CandidateSignals } from '../lib/scoring'
+import { ENCODE_PRESET_MAP } from '../types'
 import type { ClipSegment, GeneratedClip, SplitSettings, StageProgress, SubtitleCue } from '../types'
 
 const INPUT_NAME = 'input.mp4'
@@ -302,7 +303,7 @@ export function useVideoSplitter() {
               '-i', INPUT_NAME,
               '-vf', vf,
               '-c:v', 'libx264',
-              '-preset', 'ultrafast',
+              '-preset', ENCODE_PRESET_MAP[settings.encodeSpeed],
               '-crf', '26',
               ...audioArgs,
               outName,

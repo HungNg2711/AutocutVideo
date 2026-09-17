@@ -123,6 +123,37 @@ const MERGE_GAP_SECONDS = 0.6
 const MAX_MERGED_TEXT_LENGTH = 110
 const MAX_SUBTITLE_CUES_PER_CLIP = 8
 
+// drawtext never wraps text on its own — a merged caption line left as one long string
+// just overflows past the video's edges instead of shrinking to fit. Wrap it ourselves
+// into a few short lines sized for the 1080px-wide vertical output.
+const FONT_SIZE = 44
+const MAX_CHARS_PER_LINE = 24
+const MAX_SUBTITLE_LINES = 3
+
+function wrapCueText(text: string): string {
+  const words = text.split(/\s+/).filter(Boolean)
+  const lines: string[] = []
+  let current = ''
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word
+    if (current && candidate.length > MAX_CHARS_PER_LINE) {
+      lines.push(current)
+      current = word
+    } else {
+      current = candidate
+    }
+  }
+  if (current) lines.push(current)
+
+  if (lines.length > MAX_SUBTITLE_LINES) {
+    const truncated = lines.slice(0, MAX_SUBTITLE_LINES)
+    const last = truncated[MAX_SUBTITLE_LINES - 1]
+    truncated[MAX_SUBTITLE_LINES - 1] = `${last.slice(0, Math.max(0, MAX_CHARS_PER_LINE - 1))}…`
+    return truncated.join('\n')
+  }
+  return lines.join('\n')
+}
+
 function mergeCloseCues(cues: SubtitleCue[]): SubtitleCue[] {
   if (cues.length === 0) return []
   const sorted = [...cues].sort((a, b) => a.start - b.start)
@@ -169,7 +200,7 @@ export function buildSubtitleFilter(cues: SubtitleCue[], clipStart: number, clip
   return bounded
     .map(
       (cue) =>
-        `drawtext=fontfile=${FONT_FS_NAME}:text='${escapeDrawtext(cue.text)}':fontsize=52:fontcolor=white:` +
+        `drawtext=fontfile=${FONT_FS_NAME}:text='${escapeDrawtext(wrapCueText(cue.text))}':fontsize=${FONT_SIZE}:fontcolor=white:` +
         `borderw=3:bordercolor=black@0.9:box=1:boxcolor=black@0.35:boxborderw=14:` +
         `x=(w-text_w)/2:y=h-th-130:line_spacing=6:` +
         `enable='between(t,${cue.start.toFixed(2)},${cue.end.toFixed(2)})'`,

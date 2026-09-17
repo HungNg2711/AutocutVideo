@@ -1,7 +1,10 @@
 import { useState } from 'react'
-import { ClosedCaptioning, DeviceMobile, GearSix, Stack } from '@phosphor-icons/react'
-import type { SplitSettings } from '../types'
+import { ClosedCaptioning, DeviceMobile, Gauge, GearSix, Stack } from '@phosphor-icons/react'
+import type { EncodeSpeed, SplitSettings } from '../types'
+import { ENCODE_SPEED_LABEL } from '../types'
 import ScoringWeightsPanel from './ScoringWeightsPanel'
+
+const ENCODE_SPEED_OPTIONS: EncodeSpeed[] = ['quality', 'balanced', 'fast']
 
 const MAX_MANUAL_CLIP_COUNT = 30
 const DEFAULT_MANUAL_CLIP_COUNT = 12
@@ -86,6 +89,35 @@ export default function SplitSettingsControls({ settings, onChange }: SplitSetti
             />
           </div>
         )}
+      </div>
+
+      <div className="rounded-xl border border-border bg-background/40 px-4 py-3">
+        <span className="flex items-center gap-2.5">
+          <Gauge size={18} weight="bold" className="text-accent" aria-hidden="true" />
+          <span>
+            <span className="block text-sm font-medium">Tốc độ xử lý</span>
+            <span className="block text-xs text-muted-foreground">
+              Nhanh hơn = mã hoá kém tối ưu hơn (file hơi lớn hơn), không ảnh hưởng độ phân giải
+            </span>
+          </span>
+        </span>
+        <div className="mt-3 grid grid-cols-3 gap-2">
+          {ENCODE_SPEED_OPTIONS.map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => onChange({ ...settings, encodeSpeed: option })}
+              aria-pressed={settings.encodeSpeed === option}
+              className={`cursor-pointer rounded-lg border px-2 py-2 text-xs font-semibold transition-colors ${
+                settings.encodeSpeed === option
+                  ? 'border-primary bg-primary/15 text-primary'
+                  : 'border-border text-muted-foreground hover:border-primary/50 hover:text-foreground'
+              }`}
+            >
+              {ENCODE_SPEED_LABEL[option]}
+            </button>
+          ))}
+        </div>
       </div>
 
       <label className="flex cursor-pointer items-center justify-between rounded-xl border border-border bg-background/40 px-4 py-3">

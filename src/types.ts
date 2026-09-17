@@ -42,6 +42,21 @@ export const DEFAULT_SCORING_WEIGHTS: ScoringWeights = {
   deadAir: 0.1,
 }
 
+/** Trade-off between cutting speed and output quality/size — maps to an ffmpeg x264 preset. */
+export type EncodeSpeed = 'quality' | 'balanced' | 'fast'
+
+export const ENCODE_PRESET_MAP: Record<EncodeSpeed, string> = {
+  quality: 'faster',
+  balanced: 'veryfast',
+  fast: 'ultrafast',
+}
+
+export const ENCODE_SPEED_LABEL: Record<EncodeSpeed, string> = {
+  quality: 'Chất lượng cao',
+  balanced: 'Cân bằng',
+  fast: 'Nhanh nhất',
+}
+
 export type Stage =
   | 'idle'
   | 'loading-engine'
@@ -75,6 +90,7 @@ export interface SplitSettings {
   scoringWeights: ScoringWeights
   /** Exact number of clips to produce. Undefined = let the system decide (auto). */
   clipCount?: number
+  encodeSpeed: EncodeSpeed
 }
 
 export const REASON_LABEL: Record<ClipReason, string> = {

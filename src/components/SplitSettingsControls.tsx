@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { ClosedCaptioning, DeviceMobile, Gauge, GearSix, Stack } from '@phosphor-icons/react'
+import { ClosedCaptioning, DeviceMobile, FastForward, Gauge, GearSix, Stack } from '@phosphor-icons/react'
 import type { EncodeSpeed, SplitSettings } from '../types'
 import { ENCODE_SPEED_LABEL } from '../types'
 import ScoringWeightsPanel from './ScoringWeightsPanel'
 
 const ENCODE_SPEED_OPTIONS: EncodeSpeed[] = ['quality', 'balanced', 'fast']
+const PLAYBACK_SPEED_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 2]
 
 const MAX_MANUAL_CLIP_COUNT = 30
 const DEFAULT_MANUAL_CLIP_COUNT = 12
@@ -115,6 +116,47 @@ export default function SplitSettingsControls({ settings, onChange }: SplitSetti
               }`}
             >
               {ENCODE_SPEED_LABEL[option]}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-background/40 px-4 py-3">
+        <div className="flex items-center justify-between">
+          <span className="flex items-center gap-2.5">
+            <FastForward size={18} weight="bold" className="text-accent" aria-hidden="true" />
+            <span>
+              <span className="block text-sm font-medium">Tốc độ video</span>
+              <span className="block text-xs text-muted-foreground">Video cắt ra sẽ phát nhanh hơn hoặc chậm hơn bình thường</span>
+            </span>
+          </span>
+          <span className="rounded-md bg-muted px-2 py-0.5 text-sm font-semibold text-primary">
+            {settings.playbackSpeed.toFixed(2).replace(/\.?0+$/, '')}x
+          </span>
+        </div>
+        <input
+          type="range"
+          min={0.5}
+          max={2}
+          step={0.05}
+          value={settings.playbackSpeed}
+          onChange={(e) => onChange({ ...settings, playbackSpeed: Number(e.target.value) })}
+          className="mt-3 w-full accent-primary"
+        />
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {PLAYBACK_SPEED_PRESETS.map((preset) => (
+            <button
+              key={preset}
+              type="button"
+              onClick={() => onChange({ ...settings, playbackSpeed: preset })}
+              aria-pressed={settings.playbackSpeed === preset}
+              className={`cursor-pointer rounded-md border px-2 py-1 text-xs font-medium transition-colors ${
+                settings.playbackSpeed === preset
+                  ? 'border-primary bg-primary/15 text-primary'
+                  : 'border-border text-muted-foreground hover:border-primary/50 hover:text-foreground'
+              }`}
+            >
+              {preset}x
             </button>
           ))}
         </div>

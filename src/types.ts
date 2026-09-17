@@ -91,6 +91,8 @@ export interface SplitSettings {
   /** Exact number of clips to produce. Undefined = let the system decide (auto). */
   clipCount?: number
   encodeSpeed: EncodeSpeed
+  /** Output playback speed multiplier — 1 = normal, 0.5 = half speed, 2 = double speed. */
+  playbackSpeed: number
 }
 
 export const REASON_LABEL: Record<ClipReason, string> = {

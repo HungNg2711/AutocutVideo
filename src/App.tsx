@@ -18,6 +18,7 @@ const DEFAULT_SETTINGS: SplitSettings = {
   generateSubtitles: true,
   scoringWeights: DEFAULT_SCORING_WEIGHTS,
   encodeSpeed: 'fast',
+  playbackSpeed: 1,
 }
 
 export default function App() {

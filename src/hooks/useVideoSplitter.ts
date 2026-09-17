@@ -291,9 +291,21 @@ export function useVideoSplitter() {
             : 'scale=1080:-2,setsar=1'
           const cuesForSegment = settings.generateSubtitles ? candidateCuesMap.get(seg.id) ?? [] : []
           const subtitleFilter = settings.generateSubtitles ? buildSubtitleFilter(cuesForSegment, seg.start, seg.end) : ''
-          const vf = subtitleFilter ? `${baseFilter},${subtitleFilter}` : baseFilter
+          const speed = settings.playbackSpeed
+          // setpts must come after the subtitle drawtext filters — they gate on `t`
+          // relative to the clip's original timing, so re-timing the stream first would
+          // throw their enable='between(t,...)' windows off.
+          const vfParts = [baseFilter]
+          if (subtitleFilter) vfParts.push(subtitleFilter)
+          if (speed !== 1) vfParts.push(`setpts=PTS/${speed}`)
+          const vf = vfParts.join(',')
           // Forcing an AAC audio stream on a source with none makes ffmpeg refuse to run.
-          const audioArgs = hasAudio ? ['-c:a', 'aac', '-b:a', '128k'] : ['-an']
+          // atempo re-times audio to match; it's only valid in [0.5, 2] per instance, which
+          // is exactly the slider's range, so a single filter always covers it.
+          const audioArgs = hasAudio
+            ? [...(speed !== 1 ? ['-af', `atempo=${speed}`] : []), '-c:a', 'aac', '-b:a', '128k']
+            : ['-an']
+          const outputDuration = segDuration / speed
 
           await runTracked(
             ffmpeg,
@@ -313,7 +325,7 @@ export function useVideoSplitter() {
                 setProgress({
                   stage: 'cutting',
                   label: `Đang cắt clip ${i + 1}/${segments.length}…`,
-                  overall: clipBaseOverall + clipSlice * Math.min(1, timeSeconds / Math.max(segDuration, 1)),
+                  overall: clipBaseOverall + clipSlice * Math.min(1, timeSeconds / Math.max(outputDuration, 1)),
                   currentClip: i + 1,
                   totalClips: segments.length,
                 }),
